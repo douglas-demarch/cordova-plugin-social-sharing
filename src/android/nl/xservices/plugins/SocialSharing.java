@@ -132,9 +132,15 @@ public class SocialSharing extends CordovaPlugin {
     } else if (ACTION_SHARE_VIA_SMS_EVENT.equals(action)) {
       return invokeSMSIntent(callbackContext, args.getJSONObject(0), args.getString(1));
     } else if (ACTION_SHARE_VIA_EMAIL_EVENT.equals(action)) {
-      return invokeEmailIntent(callbackContext, args.getString(0), args.getString(1), args.getJSONArray(2),
-          args.isNull(3) ? null : args.getJSONArray(3), args.isNull(4) ? null : args.getJSONArray(4),
-          args.isNull(5) ? null : args.getJSONArray(5));
+      if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+        return invokeEmailIntent(callbackContext, args.getString(0),
+            args.getString(1), args.getJSONArray(2), args.isNull(3) ? null : args.getJSONArray(3),
+            args.isNull(4) ? null : args.getJSONArray(4), args.isNull(5) ? null : args.getJSONArray(5));
+      } else {
+        return doSendEmailIntent(callbackContext, args.getString(0), args.getString(1),
+            args.isNull(2) ? null : args.getJSONArray(2), args.isNull(3) ? null : args.getJSONArray(3),
+            args.isNull(4) ? null : args.getJSONArray(4), args.isNull(5) ? null : args.getJSONArray(5));
+      }
     } else {
       callbackContext.error(
           "socialSharing." + action + " is not a supported function. Did you mean '" + ACTION_SHARE_EVENT + "'?");
@@ -412,6 +418,96 @@ public class SocialSharing extends CordovaPlugin {
             });
           }
         }
+      }
+    });
+    return true;
+  }
+
+  private boolean doSendEmailIntent(
+      final CallbackContext callbackContext,
+      final String msg,
+      final String subject,
+      final JSONArray to,
+      final JSONArray cc,
+      final JSONArray bcc,
+      final JSONArray files) {
+
+    final CordovaInterface mycordova = cordova;
+    final CordovaPlugin plugin = this;
+
+    cordova.getThreadPool().execute(new SocialSharingRunnable(callbackContext) {
+      public void run() {
+        String message = msg;
+        final Intent sendIntent = new Intent(files.length() > 1 ? Intent.ACTION_SEND_MULTIPLE : Intent.ACTION_SEND);
+        // final Intent sendIntent = new Intent(Intent.ACTION_SENDTO);
+        final Intent receiverIntent = new Intent(cordova.getActivity().getApplicationContext(),
+            ShareChooserPendingIntent.class);
+        final PendingIntent pendingIntent = PendingIntent.getBroadcast(cordova.getActivity().getApplicationContext(), 0,
+            receiverIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        sendIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
+
+        if (notEmpty(subject)) {
+          sendIntent.putExtra(Intent.EXTRA_SUBJECT, subject);
+        }
+        if (notEmpty(message)) {
+          sendIntent.putExtra(android.content.Intent.EXTRA_TEXT, message);
+        }
+        try {
+          if (to != null && to.length() > 0) {
+            sendIntent.putExtra(android.content.Intent.EXTRA_EMAIL, toStringArray(to));
+          }
+          if (cc != null && cc.length() > 0) {
+            sendIntent.putExtra(android.content.Intent.EXTRA_CC, toStringArray(cc));
+          }
+          if (bcc != null && bcc.length() > 0) {
+            sendIntent.putExtra(android.content.Intent.EXTRA_BCC, toStringArray(bcc));
+          }
+          if (files.length() > 0 && !"".equals(files.getString(0))) {
+            final String dir = getDownloadDir();
+            if (dir != null) {
+              ArrayList<Uri> fileUris = new ArrayList<Uri>();
+              Uri fileUri = null;
+              for (int i = 0; i < files.length(); i++) {
+                fileUri = getFileUriAndSetType(sendIntent, dir, files.getString(i), subject, i);
+                fileUri = FileProvider.getUriForFile(webView.getContext(),
+                    cordova.getActivity().getPackageName() + ".sharing.provider", new File(fileUri.getPath()));
+                fileUris.add(fileUri);
+              }
+              if (!fileUris.isEmpty()) {
+                if (files.length() > 1) {
+                  sendIntent.putExtra(Intent.EXTRA_STREAM, fileUris);
+                } else {
+                  sendIntent.putExtra(Intent.EXTRA_STREAM, fileUri);
+                }
+              }
+            } else {
+              sendIntent.setType("text/plain");
+            }
+          } else {
+            sendIntent.setType("text/plain");
+          }
+        } catch (Exception e) {
+          callbackContext.error(e.getMessage());
+        }
+        // this was added to start the intent in a new window as suggested in #300 to
+        // prevent crashes upon return
+        sendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        // sendIntent.setData(Uri.parse("mailto:"));
+        sendIntent.setType("message/rfc822");
+        cordova.getActivity().runOnUiThread(new Runnable() {
+
+          public void run() {
+            Intent chooseIntent;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP_MR1) {
+              // Intent.createChooser's third param was only added in SDK version 22.
+              chooseIntent = Intent.createChooser(sendIntent, "Escolha o aplicativo de e-mail",
+                  pendingIntent.getIntentSender());
+            } else {
+              chooseIntent = Intent.createChooser(sendIntent, "Escolha o aplicativo de e-mail");
+            }
+            mycordova.startActivityForResult(plugin, chooseIntent, ACTIVITY_CODE_SEND__OBJECT);
+          }
+        });
       }
     });
     return true;
